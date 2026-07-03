@@ -1,0 +1,67 @@
+@import "tailwindcss";
+
+:root {
+  --background: #ffffff;
+  --foreground: #171717;
+}
+
+@theme inline {
+  --color-background: var(--background);
+  --color-foreground: var(--foreground);
+}
+
+body {
+  background: var(--background);
+  color: var(--foreground);
+  font-family:
+    Arial,
+    Helvetica,
+    sans-serif;
+}
+
+button,
+input {
+  font: inherit;
+}
+
+.landing-pattern {
+  background-image:
+    linear-gradient(90deg, rgb(0 0 0 / 0.08) 1px, transparent 1px),
+    linear-gradient(rgb(0 0 0 / 0.08) 1px, transparent 1px);
+  background-size: 28px 28px;
+}
+
+.draw-orbit {
+  display: grid;
+  width: 160px;
+  height: 160px;
+  place-items: center;
+  border: 1px solid #000;
+  border-radius: 999px;
+  background:
+    radial-gradient(circle at center, #fff 0 36%, transparent 37%),
+    repeating-conic-gradient(from 0deg, #000 0deg 12deg, #fff 12deg 24deg);
+}
+
+.draw-orbit.is-spinning {
+  animation: draw-spin 0.7s linear infinite;
+}
+
+.draw-ball {
+  display: grid;
+  width: 92px;
+  height: 92px;
+  place-items: center;
+  border: 1px solid #000;
+  border-radius: 999px;
+  background: #fff;
+  font-size: 3rem;
+  font-weight: 900;
+  line-height: 1;
+}
+
+@keyframes draw-spin {
+  to {
+    transform: rotate(360deg);
+  }
+}
