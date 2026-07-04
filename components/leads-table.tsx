@@ -1,6 +1,7 @@
 "use client";
 
 import { useEffect, useMemo, useState } from "react";
+import { formatDateTime } from "@/lib/format";
 
 type Lead = {
   id: number;
@@ -31,13 +32,6 @@ function formatPhone(value: string) {
   }
 
   return value;
-}
-
-function formatDate(value: string) {
-  return new Intl.DateTimeFormat("pt-BR", {
-    dateStyle: "short",
-    timeStyle: "short",
-  }).format(new Date(`${value}Z`));
 }
 
 function getPageFromLocation() {
@@ -148,7 +142,9 @@ export function LeadsTable() {
                       {lead.wasDrawn ? "Sim" : "Nao"}
                     </span>
                   </td>
-                  <td className="px-4 py-4 font-semibold">{formatDate(lead.createdAt)}</td>
+                  <td className="px-4 py-4 font-semibold">
+                    {formatDateTime(lead.createdAt)}
+                  </td>
                 </tr>
               ))
             )}

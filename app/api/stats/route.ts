@@ -4,5 +4,5 @@ import { getDashboardStats } from "@/lib/db";
 export const runtime = "nodejs";
 
 export async function GET() {
-  return NextResponse.json({ stats: getDashboardStats() });
+  return NextResponse.json({ stats: await getDashboardStats() });
 }

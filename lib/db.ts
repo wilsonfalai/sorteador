@@ -1,15 +1,13 @@
 import "server-only";
 
-import { mkdirSync } from "node:fs";
-import path from "node:path";
-import { DatabaseSync } from "node:sqlite";
+import mysql, { ResultSetHeader, RowDataPacket } from "mysql2/promise";
 
-type ParticipantRow = {
+type ParticipantRow = RowDataPacket & {
   id: number;
   name: string;
   email: string;
   whatsapp: string;
-  created_at: string;
+  created_at: Date | string;
 };
 
 export type Participant = {
@@ -28,14 +26,14 @@ export type Lead = Participant & {
   wasDrawn: boolean;
 };
 
-type DrawRow = {
+type DrawRow = RowDataPacket & {
   id: number;
   participant_id: number;
   winner_name: string;
   winner_email: string;
   winner_whatsapp: string;
   included_previous_winners: number;
-  created_at: string;
+  created_at: Date | string;
 };
 
 export type Draw = {
@@ -63,44 +61,88 @@ export type DrawResult =
     };
 
 const emailPattern = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
-const dbPath = path.join(process.cwd(), "data", "sorteador.sqlite");
 
 declare global {
-  var raffleDatabase: DatabaseSync | undefined;
+  var raffleMysqlPool: mysql.Pool | undefined;
+  var raffleMysqlReady: Promise<void> | undefined;
 }
 
-function getDatabase() {
-  if (!globalThis.raffleDatabase) {
-    mkdirSync(path.dirname(dbPath), { recursive: true });
-    const database = new DatabaseSync(dbPath);
+function requiredEnv(name: string) {
+  const value = process.env[name];
 
-    database.exec(`
-      PRAGMA journal_mode = WAL;
-
-      CREATE TABLE IF NOT EXISTS participants (
-        id INTEGER PRIMARY KEY AUTOINCREMENT,
-        name TEXT NOT NULL,
-        email TEXT NOT NULL UNIQUE,
-        whatsapp TEXT NOT NULL UNIQUE,
-        created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
-      );
-
-      CREATE TABLE IF NOT EXISTS draws (
-        id INTEGER PRIMARY KEY AUTOINCREMENT,
-        participant_id INTEGER NOT NULL,
-        winner_name TEXT NOT NULL,
-        winner_email TEXT NOT NULL,
-        winner_whatsapp TEXT NOT NULL,
-        included_previous_winners INTEGER NOT NULL DEFAULT 0,
-        created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
-        FOREIGN KEY (participant_id) REFERENCES participants(id)
-      );
-    `);
-
-    globalThis.raffleDatabase = database;
+  if (!value) {
+    throw new Error(`Variavel de ambiente obrigatoria ausente: ${name}`);
   }
 
-  return globalThis.raffleDatabase;
+  return value;
+}
+
+function getPool() {
+  if (!globalThis.raffleMysqlPool) {
+    globalThis.raffleMysqlPool = mysql.createPool({
+      host: requiredEnv("MYSQL_HOST"),
+      port: Number(process.env.MYSQL_PORT ?? "3306"),
+      user: requiredEnv("MYSQL_USER"),
+      password: process.env.MYSQL_PASSWORD ?? "",
+      database: requiredEnv("MYSQL_DATABASE"),
+      waitForConnections: true,
+      connectionLimit: Number(process.env.MYSQL_CONNECTION_LIMIT ?? "10"),
+      ssl:
+        process.env.MYSQL_SSL === "true"
+          ? { rejectUnauthorized: process.env.MYSQL_SSL_REJECT_UNAUTHORIZED !== "false" }
+          : undefined,
+    });
+  }
+
+  return globalThis.raffleMysqlPool;
+}
+
+async function ensureDatabase() {
+  if (!globalThis.raffleMysqlReady) {
+    const database = getPool();
+
+    globalThis.raffleMysqlReady = database.query(`
+      CREATE TABLE IF NOT EXISTS participants (
+        id INT UNSIGNED NOT NULL AUTO_INCREMENT,
+        name VARCHAR(255) NOT NULL,
+        email VARCHAR(255) NOT NULL,
+        whatsapp VARCHAR(32) NOT NULL,
+        created_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
+        PRIMARY KEY (id),
+        UNIQUE KEY participants_email_unique (email),
+        UNIQUE KEY participants_whatsapp_unique (whatsapp)
+      ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
+    `)
+      .then(() =>
+        database.query(`
+          CREATE TABLE IF NOT EXISTS draws (
+            id INT UNSIGNED NOT NULL AUTO_INCREMENT,
+            participant_id INT UNSIGNED NOT NULL,
+            winner_name VARCHAR(255) NOT NULL,
+            winner_email VARCHAR(255) NOT NULL,
+            winner_whatsapp VARCHAR(32) NOT NULL,
+            included_previous_winners TINYINT(1) NOT NULL DEFAULT 0,
+            created_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
+            PRIMARY KEY (id),
+            KEY draws_participant_id_index (participant_id),
+            CONSTRAINT draws_participant_id_foreign
+              FOREIGN KEY (participant_id) REFERENCES participants(id)
+              ON DELETE RESTRICT
+          ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
+        `),
+      )
+      .then(() => undefined);
+  }
+
+  await globalThis.raffleMysqlReady;
+}
+
+function serializeDate(value: Date | string) {
+  if (value instanceof Date) {
+    return value.toISOString();
+  }
+
+  return value;
 }
 
 function participantFromRow(row: ParticipantRow): Participant {
@@ -109,7 +151,7 @@ function participantFromRow(row: ParticipantRow): Participant {
     name: row.name,
     email: row.email,
     whatsapp: row.whatsapp,
-    createdAt: row.created_at,
+    createdAt: serializeDate(row.created_at),
   };
 }
 
@@ -128,7 +170,7 @@ function drawFromRow(row: DrawRow): Draw {
     winnerEmail: row.winner_email,
     winnerWhatsapp: row.winner_whatsapp,
     includedPreviousWinners: row.included_previous_winners === 1,
-    createdAt: row.created_at,
+    createdAt: serializeDate(row.created_at),
   };
 }
 
@@ -150,7 +192,7 @@ export function formatPhone(value: string) {
   return value;
 }
 
-export function registerParticipant(input: {
+export async function registerParticipant(input: {
   name: string;
   email: string;
   whatsapp: string;
@@ -171,58 +213,70 @@ export function registerParticipant(input: {
     return { ok: false as const, message: "Informe um WhatsApp com DDD." };
   }
 
-  const database = getDatabase();
-  const existing = database
-    .prepare("SELECT id FROM participants WHERE email = ? OR whatsapp = ? LIMIT 1")
-    .get(email, whatsapp);
+  await ensureDatabase();
 
-  if (existing) {
-    return {
-      ok: false as const,
-      message: "Este email ou WhatsApp ja esta cadastrado.",
-    };
+  try {
+    await getPool().execute(
+      "INSERT INTO participants (name, email, whatsapp) VALUES (?, ?, ?)",
+      [name, email, whatsapp],
+    );
+  } catch (error) {
+    if (
+      typeof error === "object" &&
+      error !== null &&
+      "code" in error &&
+      error.code === "ER_DUP_ENTRY"
+    ) {
+      return {
+        ok: false as const,
+        message: "Este email ou WhatsApp ja esta cadastrado.",
+      };
+    }
+
+    throw error;
   }
-
-  database
-    .prepare("INSERT INTO participants (name, email, whatsapp) VALUES (?, ?, ?)")
-    .run(name, email, whatsapp);
 
   return { ok: true as const, message: "Cadastro realizado com sucesso." };
 }
 
-export function getParticipantsCount() {
-  const row = getDatabase()
-    .prepare("SELECT COUNT(*) AS count FROM participants")
-    .get() as { count: number };
+export async function getParticipantsCount() {
+  await ensureDatabase();
 
-  return row.count;
+  const [rows] = await getPool().query<(RowDataPacket & { count: number })[]>(
+    "SELECT COUNT(*) AS count FROM participants",
+  );
+
+  return rows[0]?.count ?? 0;
 }
 
-export function getWinnersCount() {
-  const row = getDatabase()
-    .prepare("SELECT COUNT(DISTINCT participant_id) AS count FROM draws")
-    .get() as { count: number };
+export async function getWinnersCount() {
+  await ensureDatabase();
 
-  return row.count;
+  const [rows] = await getPool().query<(RowDataPacket & { count: number })[]>(
+    "SELECT COUNT(DISTINCT participant_id) AS count FROM draws",
+  );
+
+  return rows[0]?.count ?? 0;
 }
 
-export function getEligibleParticipants(includePreviousWinners: boolean) {
-  const database = getDatabase();
-  const rows = database
-    .prepare(
-      includePreviousWinners
-        ? "SELECT * FROM participants ORDER BY id ASC"
-        : `SELECT * FROM participants
-           WHERE id NOT IN (SELECT DISTINCT participant_id FROM draws)
-           ORDER BY id ASC`,
-    )
-    .all() as ParticipantRow[];
+export async function getEligibleParticipants(includePreviousWinners: boolean) {
+  await ensureDatabase();
+
+  const [rows] = await getPool().query<ParticipantRow[]>(
+    includePreviousWinners
+      ? "SELECT * FROM participants ORDER BY id ASC"
+      : `SELECT * FROM participants
+         WHERE id NOT IN (SELECT DISTINCT participant_id FROM draws)
+         ORDER BY id ASC`,
+  );
 
   return rows.map(participantFromRow);
 }
 
-export function drawParticipant(includePreviousWinners: boolean): DrawResult {
-  const totalParticipants = getParticipantsCount();
+export async function drawParticipant(
+  includePreviousWinners: boolean,
+): Promise<DrawResult> {
+  const totalParticipants = await getParticipantsCount();
 
   if (totalParticipants === 0) {
     return {
@@ -233,7 +287,7 @@ export function drawParticipant(includePreviousWinners: boolean): DrawResult {
     };
   }
 
-  const eligibleParticipants = getEligibleParticipants(includePreviousWinners);
+  const eligibleParticipants = await getEligibleParticipants(includePreviousWinners);
 
   if (eligibleParticipants.length === 0) {
     return {
@@ -247,80 +301,82 @@ export function drawParticipant(includePreviousWinners: boolean): DrawResult {
 
   const winner =
     eligibleParticipants[Math.floor(Math.random() * eligibleParticipants.length)];
-  const result = getDatabase()
-    .prepare(
-      `INSERT INTO draws (
-        participant_id,
-        winner_name,
-        winner_email,
-        winner_whatsapp,
-        included_previous_winners
-      ) VALUES (?, ?, ?, ?, ?)`,
-    )
-    .run(
+  const [result] = await getPool().execute<ResultSetHeader>(
+    `INSERT INTO draws (
+      participant_id,
+      winner_name,
+      winner_email,
+      winner_whatsapp,
+      included_previous_winners
+    ) VALUES (?, ?, ?, ?, ?)`,
+    [
       winner.id,
       winner.name,
       winner.email,
       winner.whatsapp,
       includePreviousWinners ? 1 : 0,
-    );
-
-  const drawRow = getDatabase()
-    .prepare("SELECT * FROM draws WHERE id = ?")
-    .get(Number(result.lastInsertRowid)) as DrawRow;
+    ],
+  );
+  const [rows] = await getPool().query<DrawRow[]>(
+    "SELECT * FROM draws WHERE id = ?",
+    [result.insertId],
+  );
 
   return {
     ok: true,
     winner,
-    draw: drawFromRow(drawRow),
+    draw: drawFromRow(rows[0]),
     eligibleCount: eligibleParticipants.length,
   };
 }
 
-export function getDrawHistory() {
-  const rows = getDatabase()
-    .prepare("SELECT * FROM draws ORDER BY datetime(created_at) DESC, id DESC")
-    .all() as DrawRow[];
+export async function getDrawHistory() {
+  await ensureDatabase();
+
+  const [rows] = await getPool().query<DrawRow[]>(
+    "SELECT * FROM draws ORDER BY created_at DESC, id DESC",
+  );
 
   return rows.map(drawFromRow);
 }
 
-export function getLeadsPage(page: number, pageSize = 20) {
+export async function getLeadsPage(page: number, pageSize = 20) {
+  await ensureDatabase();
+
   const safePage = Math.max(1, Math.floor(page));
-  const database = getDatabase();
-  const totalRow = database
-    .prepare("SELECT COUNT(*) AS count FROM participants")
-    .get() as { count: number };
-  const totalPages = Math.max(1, Math.ceil(totalRow.count / pageSize));
+  const [totalRows] = await getPool().query<(RowDataPacket & { count: number })[]>(
+    "SELECT COUNT(*) AS count FROM participants",
+  );
+  const total = totalRows[0]?.count ?? 0;
+  const totalPages = Math.max(1, Math.ceil(total / pageSize));
   const currentPage = Math.min(safePage, totalPages);
   const offset = (currentPage - 1) * pageSize;
-  const rows = database
-    .prepare(
-      `SELECT
-        participants.*,
-        CASE WHEN draws.participant_id IS NULL THEN 0 ELSE 1 END AS was_drawn
-      FROM participants
-      LEFT JOIN (
-        SELECT DISTINCT participant_id
-        FROM draws
-      ) draws ON draws.participant_id = participants.id
-      ORDER BY datetime(participants.created_at) DESC, participants.id DESC
-      LIMIT ? OFFSET ?`,
-    )
-    .all(pageSize, offset) as LeadRow[];
+  const [rows] = await getPool().query<LeadRow[]>(
+    `SELECT
+      participants.*,
+      CASE WHEN draws.participant_id IS NULL THEN 0 ELSE 1 END AS was_drawn
+    FROM participants
+    LEFT JOIN (
+      SELECT DISTINCT participant_id
+      FROM draws
+    ) draws ON draws.participant_id = participants.id
+    ORDER BY participants.created_at DESC, participants.id DESC
+    LIMIT ? OFFSET ?`,
+    [pageSize, offset],
+  );
 
   return {
     leads: rows.map(leadFromRow),
     page: currentPage,
     pageSize,
-    total: totalRow.count,
+    total,
     totalPages,
   };
 }
 
-export function getDashboardStats() {
-  const participants = getParticipantsCount();
-  const winners = getWinnersCount();
+export async function getDashboardStats() {
+  const participants = await getParticipantsCount();
+  const winners = await getWinnersCount();
 
   return {
     participants,

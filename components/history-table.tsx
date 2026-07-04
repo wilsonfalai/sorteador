@@ -1,6 +1,7 @@
 "use client";
 
 import { useEffect, useState } from "react";
+import { formatDateTime } from "@/lib/format";
 
 type Draw = {
   id: number;
@@ -23,13 +24,6 @@ function formatPhone(value: string) {
   }
 
   return value;
-}
-
-function formatDate(value: string) {
-  return new Intl.DateTimeFormat("pt-BR", {
-    dateStyle: "short",
-    timeStyle: "short",
-  }).format(new Date(`${value}Z`));
 }
 
 export function HistoryTable() {
@@ -103,7 +97,9 @@ export function HistoryTable() {
                       ? "Incluiu ganhadores anteriores"
                       : "Excluiu ganhadores anteriores"}
                   </td>
-                  <td className="px-4 py-4 font-semibold">{formatDate(draw.createdAt)}</td>
+                  <td className="px-4 py-4 font-semibold">
+                    {formatDateTime(draw.createdAt)}
+                  </td>
                 </tr>
               ))
             )}

@@ -11,17 +11,34 @@ Aplicacao simples para cadastro publico de participantes e sorteio interno.
 - Opcao para incluir ou excluir pessoas que ja foram sorteadas.
 - Historico de sorteios em `/admin/historico`.
 - Listagem de leads em `/admin/leads`, paginada de 20 em 20.
-- Banco local SQLite.
+- Banco MySQL.
 
 ## Tecnologias
 
 - Next.js
 - React
 - Tailwind CSS
-- SQLite nativo do Node (`node:sqlite`)
+- MySQL
+- mysql2
 - pnpm
 
 ## Como rodar
+
+Copie o arquivo de exemplo de variaveis de ambiente:
+
+```bash
+cp .env.example .env.local
+```
+
+Preencha as credenciais MySQL no `.env.local`:
+
+```env
+MYSQL_HOST=localhost
+MYSQL_PORT=3306
+MYSQL_USER=root
+MYSQL_PASSWORD=
+MYSQL_DATABASE=sorteador
+```
 
 Instale as dependencias:
 
@@ -50,15 +67,11 @@ http://localhost:3000
 
 ## Banco de dados
 
-O banco SQLite fica em:
+O projeto usa MySQL. O banco informado em `MYSQL_DATABASE` precisa existir antes de iniciar a aplicacao.
 
-```text
-data/sorteador.sqlite
-```
+As tabelas `participants` e `draws` sao criadas automaticamente quando a aplicacao acessa o banco pela primeira vez.
 
-As tabelas sao criadas automaticamente quando a aplicacao acessa o banco pela primeira vez.
-
-Arquivos SQLite locais ficam ignorados no Git pelo `.gitignore`.
+Em deploy na Vercel, cadastre as mesmas variaveis de ambiente nas configuracoes do projeto.
 
 ## Comandos uteis
 
@@ -82,4 +95,4 @@ pnpm start
 
 ## Observacao
 
-Este projeto usa `node:sqlite`, que no Node 24 ainda emite aviso de recurso experimental. O aviso nao impede o funcionamento da aplicacao.
+Nao commite arquivos `.env`. Use o `.env.example` apenas como modelo.

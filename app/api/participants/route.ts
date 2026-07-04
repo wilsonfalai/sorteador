@@ -17,7 +17,7 @@ export async function POST(request: Request) {
     );
   }
 
-  const result = registerParticipant({
+  const result = await registerParticipant({
     name: body.name ?? "",
     email: body.email ?? "",
     whatsapp: body.whatsapp ?? "",
